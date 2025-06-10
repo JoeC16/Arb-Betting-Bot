@@ -21,8 +21,6 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"Error sending Telegram message: {e}")
 
-send_telegram_message("✅ Telegram alert test from Railway!")
-
 # --- OddsAPI and Smarkets ---
 def get_all_sports():
     url = "https://api.the-odds-api.com/v4/sports/"
