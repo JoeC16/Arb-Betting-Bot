@@ -1,102 +1,113 @@
 import os
 import requests
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
-from dotenv import load_dotenv
+import logging
+import telegram
 
-# Load .env variables if present
-load_dotenv()
-
-API_KEY = os.getenv("ODDS_API_KEY")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# --- Config ---
+ODDS_API_KEY = os.getenv("ODDS_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-UK_BOOKMAKERS = {
-    "williamhill", "ladbrokes_uk", "coral", "skybet", "betway", "sport888",
-    "betvictor", "paddypower", "boylesports", "unibet_uk", "casumo",
-    "virginbet", "livescorebet", "leovegas", "grosvenor"
-}
+EXCHANGES = {"betfair_ex_uk", "smarkets", "matchbook"}
+HEADERS = {"x-apisports-key": ODDS_API_KEY}
+API_BASE = "https://api.the-odds-api.com/v4"
+BOOKMAKER_BACK_THRESHOLD = 1.01
+SCAN_INTERVAL = 600  # 10 minutes
+TIMEZONE = pytz.utc  # Adjust to your desired timezone
 
-LAY_EXCHANGES = {"betfair_ex_uk", "matchbook", "smarkets"}
+# --- Logging ---
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-ODDS_API_URL = "https://api.the-odds-api.com/v4/sports/upcoming/odds"
-MINIMUM_MARGIN = 0.02  # 2%
+# --- Telegram ---
+bot = telegram.Bot(token=TELEGRAM_TOKEN)
 
-def fetch_all_events():
+
+def get_all_sports():
+    url = f"{API_BASE}/sports"
+    resp = requests.get(url, headers=HEADERS)
+    return [s["key"] for s in resp.json() if s["active"]]
+
+
+def get_events(sport_key):
+    url = f"{API_BASE}/sports/{sport_key}/odds"
     params = {
-        "apiKey": API_KEY,
         "regions": "uk",
-        "markets": "h2h,h2h_lay",
+        "markets": "h2h",  # we’ll add lay dynamically per bookmaker
         "oddsFormat": "decimal",
         "dateFormat": "iso",
     }
-    response = requests.get(ODDS_API_URL, params=params)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"Error: {response.status_code} - {response.text}")
+    try:
+        resp = requests.get(url, headers=HEADERS, params=params)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        logging.warning(f"❌ Could not fetch odds for {sport_key}: {e}")
         return []
 
-def send_telegram_message(message):
-    url = (
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        f"?chat_id={TELEGRAM_CHAT_ID}&text={requests.utils.quote(message)}"
-    )
-    requests.get(url)
 
-def find_arb_opportunities(events):
-    for event in events:
-        event_name = f"{event['home_team']} vs {event['away_team']}"
-        start_time_utc = datetime.fromisoformat(event["commence_time"].replace("Z", "+00:00"))
-        start_time_local = start_time_utc.astimezone(pytz.timezone("Europe/London")).strftime("%Y-%m-%d %H:%M")
+def scan_events():
+    logging.info("🔎 Scanning for arbitrage opportunities...")
+    sports = get_all_sports()
+    for sport_key in sports:
+        events = get_events(sport_key)
+        for event in events:
+            match_title = f"{event['home_team']} vs {event['away_team']}"
+            lay_odds = {}
+            back_odds = {}
 
-        best_lay = {}
-        for book in event.get("bookmakers", []):
-            for market in book.get("markets", []):
-                if market["key"] == "h2h_lay" and book["key"] in LAY_EXCHANGES:
-                    for outcome in market.get("outcomes", []):
-                        name = outcome["name"]
-                        price = float(outcome["price"])
-                        if name not in best_lay or price < best_lay[name]["price"]:
-                            best_lay[name] = {"price": price, "bookmaker": book["title"]}
+            for bookmaker in event.get("bookmakers", []):
+                bookie_key = bookmaker["key"]
+                markets = {m["key"]: m for m in bookmaker.get("markets", [])}
 
-        if not best_lay:
-            continue  # Skip if no lay prices available
-
-        for book in event.get("bookmakers", []):
-            if book["key"] not in UK_BOOKMAKERS:
-                continue
-            for market in book.get("markets", []):
-                if market["key"] != "h2h":
+                if "h2h" not in markets:
                     continue
-                for outcome in market.get("outcomes", []):
-                    name = outcome["name"]
-                    back_price = float(outcome["price"])
-                    if name in best_lay:
-                        lay_price = best_lay[name]["price"]
-                        margin = (1 / lay_price) - (1 / back_price)
-                        if margin > MINIMUM_MARGIN:
-                            message = (
-                                f"📈 Arb Opportunity:\n"
-                                f"🏟 {event_name}\n"
-                                f"🕒 {start_time_local}\n"
-                                f"🔁 Team: {name}\n"
-                                f"✅ Back @ {back_price} ({book['title']})\n"
-                                f"❌ Lay @ {lay_price} ({best_lay[name]['bookmaker']})\n"
-                                f"📊 Margin: {round(margin * 100, 2)}%"
-                            )
-                            send_telegram_message(message)
 
-def main():
+                # --- Back odds ---
+                for outcome in markets["h2h"]["outcomes"]:
+                    name, price = outcome["name"], float(outcome["price"])
+                    if name not in back_odds or price > back_odds[name][0]:
+                        back_odds[name] = (price, bookmaker["title"])
+
+                # --- Lay odds (only if supported) ---
+                if bookie_key in EXCHANGES and "h2h_lay" in markets:
+                    for outcome in markets["h2h_lay"]["outcomes"]:
+                        name, price = outcome["name"], float(outcome["price"])
+                        if name not in lay_odds or price < lay_odds[name][0]:
+                            lay_odds[name] = (price, bookmaker["title"])
+
+            # --- Compare ---
+            for runner in set(back_odds) & set(lay_odds):
+                back_price, back_bookie = back_odds[runner]
+                lay_price, lay_bookie = lay_odds[runner]
+
+                if back_price > lay_price:
+                    profit = (back_price - lay_price) / lay_price * 100
+                    message = (
+                        f"💰 Arbitrage Opportunity!\n\n"
+                        f"🏟️ Match: {match_title}\n"
+                        f"🔹 Runner: {runner}\n"
+                        f"🔙 Back @ {back_price:.2f} ({back_bookie})\n"
+                        f"🔄 Lay @ {lay_price:.2f} ({lay_bookie})\n"
+                        f"📈 Profit Margin: {profit:.2f}%"
+                    )
+                    logging.info(message)
+                    try:
+                        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+                    except Exception as e:
+                        logging.warning(f"Telegram send failed: {e}")
+
+
+def main_loop():
     while True:
-        print("🔄 Scanning for arbitrage opportunities...")
         try:
-            events = fetch_all_events()
-            find_arb_opportunities(events)
+            scan_events()
         except Exception as e:
-            print(f"❌ Error: {e}")
-        time.sleep(600)  # Wait 10 minutes
+            logging.error(f"Scan failed: {e}")
+        time.sleep(SCAN_INTERVAL)
+
 
 if __name__ == "__main__":
-    main()
+    main_loop()
