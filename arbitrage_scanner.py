@@ -13,7 +13,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # ✅ Corrected to your Railwa
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 EXCHANGES = {"betfair_ex_uk", "smarkets", "matchbook"}
-HEADERS = {"x-apisports-key": ODDS_API_KEY}
+HEADERS = {"x-api-key": ODDS_API_KEY}
 API_BASE = "https://api.the-odds-api.com/v4"
 BOOKMAKER_BACK_THRESHOLD = 1.01
 SCAN_INTERVAL = 600  # 10 minutes
