@@ -67,52 +67,69 @@ def scan_all_opportunities():
     smarket_event_ids = get_smarkets_event_ids()
 
     smarkets = {}
+
+    print("🟢 Fetching Smarkets lay odds...")
+
+    # Build a simple lookup: (event name, contract name) → lay odds
     for eid in smarket_event_ids:
-        ed = get_smarkets_event(eid)
-        if "event" not in ed:
+        event_data = get_smarkets_event(eid)
+        if "event" not in event_data:
             continue
-        name = ed["event"]["name"]
-        for mid in ed["event"].get("markets", []):
-            quotes = get_smarkets_quotes(mid)
-            for cid, c in quotes.get("contracts", {}).items():
-                smarkets[f"{name}|{cid}"] = {
-                    "lay": c.get("lay_price", 0),
-                    "market_id": mid
-                }
+
+        name = event_data["event"]["name"]
+        for market_id in event_data["event"].get("markets", []):
+            quotes = get_smarkets_quotes(market_id)
+            for cid, contract in quotes.get("contracts", {}).items():
+                contract_name = contract.get("name", "").strip()
+                lay_price = contract.get("lay_price", 0)
+                if lay_price and contract_name:
+                    smarkets[(name.strip(), contract_name)] = lay_price
+
+    print(f"✅ Loaded {len(smarkets)} lay odds from Smarkets")
 
     for sport in sports:
         sport_key = sport["key"]
+        print(f"⚽ Scanning sport: {sport_key} ({sport['title']})")
         events = get_oddsapi_data(sport_key)
+
         for ev in events:
-            teams = " vs ".join(ev.get("teams", []))
-            kickoff = ev.get("commence_time", "")[:19]
-            for book in ev.get("bookmakers", []):
-                for market in book.get("markets", []):
-                    market_name = market.get("key")
+            event_name = ev.get("home_team", "") + " vs " + ev.get("away_team", "")
+            commence_time = ev.get("commence_time", "")[:19]
+
+            for bookmaker in ev.get("bookmakers", []):
+                for market in bookmaker.get("markets", []):
                     for outcome in market.get("outcomes", []):
-                        team = outcome["name"]
+                        team = outcome["name"].strip()
                         back_odds = outcome["price"]
-                        key = match_event_name(team, list(smarkets.keys()))
-                        if not key:
+
+                        key = (event_name.strip(), team)
+                        lay_odds = smarkets.get(key, 0)
+
+                        if lay_odds == 0:
+                            print(f"❌ No lay odds for {key}")
                             continue
-                        lay_odds = smarkets.get(key[0], {}).get("lay", 0)
-                        arb, profit_pct = is_arbitrage(back_odds, lay_odds)
-                        if arb and profit_pct >= MIN_PROFIT_PCT:
-                            msg_id = f"{sport_key}|{teams}|{team}|{market_name}"
-                            if msg_id not in seen_keys:
-                                seen_keys.add(msg_id)
-                                profit_est = BANKROLL * (profit_pct / 100)
-                                message = (
-                                    f"*Arbitrage Opportunity*\\n"
-                                    f"*Sport:* {sport['title']}\\n"
-                                    f"*Teams:* {teams}\\n"
-                                    f"*Market:* {market_name}\\n"
-                                    f"*Back:* {team} @ {back_odds}\\n"
-                                    f"*Lay:* {team} @ {lay_odds}\\n"
-                                    f"*Profit:* {profit_pct:.2f}% (~£{profit_est:.2f})\\n"
-                                    f"*Kickoff:* {kickoff}"
+
+                        margin = (1 / back_odds) + (1 / lay_odds)
+                        profit_pct = round((1 - margin) * 100, 2)
+
+                        print(f"🔍 {key} → Back: {back_odds}, Lay: {lay_odds}, Margin: {margin:.4f}, Profit: {profit_pct}%")
+
+                        if margin < 1 and profit_pct >= MIN_PROFIT_PCT:
+                            alert_id = f"{sport_key}|{event_name}|{team}"
+                            if alert_id not in seen_keys:
+                                seen_keys.add(alert_id)
+                                estimated_profit = round(BANKROLL * profit_pct / 100, 2)
+                                msg = (
+                                    f"💰 *Arbitrage Opportunity*\n"
+                                    f"*Sport:* {sport['title']}\n"
+                                    f"*Match:* {event_name}\n"
+                                    f"*Market:* {market['key']}\n"
+                                    f"*Back:* {team} @ {back_odds}\n"
+                                    f"*Lay:* {team} @ {lay_odds}\n"
+                                    f"*Profit:* {profit_pct:.2f}% (~£{estimated_profit})\n"
+                                    f"*Start:* {commence_time}"
                                 )
-                                send_telegram_message(message)
+                                send_telegram_message(msg)
 
 # --- Loop Forever ---
 if __name__ == "__main__":
