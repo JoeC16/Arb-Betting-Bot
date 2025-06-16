@@ -6,11 +6,10 @@ import pytz
 import logging
 from telegram import Bot
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder
 
 # --- Config ---
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # ✅ updated
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # ✅ Corrected to your Railway variable
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 EXCHANGES = {"betfair_ex_uk", "smarkets", "matchbook"}
@@ -18,25 +17,29 @@ HEADERS = {"x-apisports-key": ODDS_API_KEY}
 API_BASE = "https://api.the-odds-api.com/v4"
 BOOKMAKER_BACK_THRESHOLD = 1.01
 SCAN_INTERVAL = 600  # 10 minutes
-TIMEZONE = pytz.utc  # Adjust to your desired timezone
+TIMEZONE = pytz.utc
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # --- Telegram ---
-bot = Bot(token=TELEGRAM_TOKEN)  # ✅ using corrected token variable
+bot = Bot(token=TELEGRAM_TOKEN)
 
 def get_all_sports():
     url = f"{API_BASE}/sports"
     resp = requests.get(url, headers=HEADERS)
-    return [s["key"] for s in resp.json() if s["active"]]
-
+    try:
+        resp.raise_for_status()
+        return [s["key"] for s in resp.json() if s.get("active")]
+    except Exception as e:
+        logging.error(f"Failed to fetch sports: {e}")
+        return []
 
 def get_events(sport_key):
     url = f"{API_BASE}/sports/{sport_key}/odds"
     params = {
         "regions": "uk",
-        "markets": "h2h",  # we’ll add lay dynamically per bookmaker
+        "markets": "h2h",
         "oddsFormat": "decimal",
         "dateFormat": "iso",
     }
@@ -48,19 +51,24 @@ def get_events(sport_key):
         logging.warning(f"❌ Could not fetch odds for {sport_key}: {e}")
         return []
 
-
 def scan_events():
     logging.info("🔎 Scanning for arbitrage opportunities...")
     sports = get_all_sports()
+
     for sport_key in sports:
         events = get_events(sport_key)
+
+        if not isinstance(events, list):
+            logging.error(f"Expected list of events but got: {type(events)} | content: {events}")
+            continue
+
         for event in events:
-            match_title = f"{event['home_team']} vs {event['away_team']}"
+            match_title = f"{event.get('home_team')} vs {event.get('away_team')}"
             lay_odds = {}
             back_odds = {}
 
             for bookmaker in event.get("bookmakers", []):
-                bookie_key = bookmaker["key"]
+                bookie_key = bookmaker.get("key")
                 markets = {m["key"]: m for m in bookmaker.get("markets", [])}
 
                 if "h2h" not in markets:
@@ -72,14 +80,13 @@ def scan_events():
                     if name not in back_odds or price > back_odds[name][0]:
                         back_odds[name] = (price, bookmaker["title"])
 
-                # --- Lay odds (only if supported) ---
+                # --- Lay odds ---
                 if bookie_key in EXCHANGES and "h2h_lay" in markets:
                     for outcome in markets["h2h_lay"]["outcomes"]:
                         name, price = outcome["name"], float(outcome["price"])
                         if name not in lay_odds or price < lay_odds[name][0]:
                             lay_odds[name] = (price, bookmaker["title"])
 
-            # --- Compare ---
             for runner in set(back_odds) & set(lay_odds):
                 back_price, back_bookie = back_odds[runner]
                 lay_price, lay_bookie = lay_odds[runner]
@@ -100,7 +107,6 @@ def scan_events():
                     except Exception as e:
                         logging.warning(f"Telegram send failed: {e}")
 
-
 def main_loop():
     while True:
         try:
@@ -108,7 +114,6 @@ def main_loop():
         except Exception as e:
             logging.error(f"Scan failed: {e}")
         time.sleep(SCAN_INTERVAL)
-
 
 if __name__ == "__main__":
     main_loop()
