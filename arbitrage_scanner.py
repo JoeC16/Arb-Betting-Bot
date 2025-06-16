@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 import pytz
 import logging
 from telegram import Bot
-from telegram.ext import Updater
+from telegram.constants import ParseMode
+from telegram.ext import ApplicationBuilder
 
 # --- Config ---
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
