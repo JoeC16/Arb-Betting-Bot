@@ -10,7 +10,7 @@ from telegram.ext import ApplicationBuilder
 
 # --- Config ---
 ODDS_API_KEY = os.getenv("ODDS_API_KEY")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # ✅ updated
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 EXCHANGES = {"betfair_ex_uk", "smarkets", "matchbook"}
@@ -24,8 +24,7 @@ TIMEZONE = pytz.utc  # Adjust to your desired timezone
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # --- Telegram ---
-bot = Bot(token=TELEGRAM_TOKEN)
-
+bot = Bot(token=TELEGRAM_TOKEN)  # ✅ using corrected token variable
 
 def get_all_sports():
     url = f"{API_BASE}/sports"
