@@ -24,7 +24,7 @@ TIMEZONE = pytz.utc  # Adjust to your desired timezone
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # --- Telegram ---
-bot = telegram.Bot(token=TELEGRAM_TOKEN)
+bot = Bot(token=TELEGRAM_TOKEN)
 
 
 def get_all_sports():
